@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Line 彙整">
+<meta name="theme-color" content="#00b900">
+<title>Line 社群彙整</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; padding: 0; background: #0d1117; font-family: 'PingFang TC', 'Noto Sans TC', sans-serif; }
+  textarea, input, button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 4px; } 
+  ::-webkit-scrollbar-track { background: #0d1117; }
+  ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const STORAGE_KEY = "line_local_records_v2";
+function loadRecords() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; } }
+function saveRecords(r) { localStorage.setItem(STORAGE_KEY, JSON.stringify(r)); }
+function fmtDate(iso) { return new Date(iso).toLocaleDateString("zh-TW", { year:"numeric", month:"2-digit", day:"2-digit" }); }
+function fmtTime(iso) { return new Date(iso).toLocaleTimeString("zh-TW", { hour:"2-digit", minute:"2-digit" }); }
+const COLORS = ["#4ade80","#60a5fa","#f472b6","#fb923c","#a78bfa","#34d399","#fbbf24"];
+
+function parseLineExport(raw) {
+  const dayMap = new Map();
+  const dateRe = /^(\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/;
+  const msgRe = /^(?:上午|下午)?\s*\d{1,2}:\d{2}\s+(.+?)\s{2,}(.+)$/;
+  const msgRe2 = /^\d{2}:\d{2}\t(.+?)\t(.+)$/;
+  let currentDate = null;
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const dMatch = trimmed.match(dateRe);
+    if (dMatch) { currentDate = dMatch[1].replace(/[\.\-]/g, "/"); if (!dayMap.has(currentDate)) dayMap.set(currentDate, { messages: [], senders: new Set() }); continue; }
+    if (!currentDate) continue;
+    const m = trimmed.match(msgRe) || trimmed.match(msgRe2);
+    if (m) {
+      const sender = m[1].trim(); const text = m[2].trim();
+      if (text && !["已收回訊息","傳送貼圖","傳送圖片","傳送影片","傳送檔案","通話"].some(s => text.includes(s))) {
+        dayMap.get(currentDate).messages.push({ sender, text, date: currentDate });
+        dayMap.get(currentDate).senders.add(sender);
+      }
+    }
+  }
+  return dayMap;
+}
+
+const TOPIC_KEYWORDS = [
+  { title:"工作／事業", emoji:"💼", words:["工作","上班","公司","老闆","薪水","加班","職場","面試","求職","升遷","業績","客戶","開會","專案","deadline"] },
+  { title:"投資／理財", emoji:"📈", words:["股票","基金","ETF","投資","理財","存錢","報酬","漲","跌","買進","賣出","獲利","虧損","加密貨幣","比特幣","房價","貸款"] },
+  { title:"飲食／美食", emoji:"🍜", words:["吃","餐廳","料理","食物","美食","好吃","推薦","飯","麵","火鍋","燒烤","咖啡","飲料","外送","訂餐"] },
+  { title:"健康／運動", emoji:"🏃", words:["運動","健身","跑步","減肥","瘦","醫生","健康","生病","症狀","藥","睡眠","疲勞","體重","肌肉","瑜珈"] },
+  { title:"科技／AI應用", emoji:"💻", words:["手機","電腦","app","軟體","程式","AI","ChatGPT","Claude","Canva","notion","自動化","串接","工具","GPT","workflow","提示詞","prompt","生成","模型","API"] },
+  { title:"娛樂／休閒", emoji:"🎬", words:["電影","電視","追劇","音樂","演唱會","旅遊","旅行","出遊","假期","周末","玩","好玩","有趣","笑"] },
+  { title:"新聞／時事", emoji:"📰", words:["新聞","政府","政策","選舉","社會","事件","發生","報導","媒體","國際","台灣","美國","中國","疫情"] },
+  { title:"人際／感情", emoji:"❤️", words:["朋友","家人","感情","男友","女友","老公","老婆","結婚","分手","約會","關係","溝通","爭吵","愛"] },
+  { title:"學習／教育", emoji:"📚", words:["學習","讀書","考試","學校","課程","英文","日文","自學","知識","筆記","進修","技能"] },
+  { title:"購物／消費", emoji:"🛍️", words:["購物","買","賣","折扣","優惠","促銷","網購","蝦皮","pchome","價格","便宜","貴","退款"] },
+];
+const MOOD_RULES = [
+  { mood:"熱烈討論", emoji:"🔥", words:["哇","太棒了","超讚","厲害","不敢相信","震驚","認同","同意","對啊","就是","真的","確實"] },
+  { mood:"輕鬆閒聊", emoji:"😄", words:["哈哈","笑死","XD","😂","lol","開心","有趣","好笑","玩笑","嗯嗯","好啊","沒事"] },
+  { mood:"積極求助", emoji:"🙋", words:["請問","有人","怎麼","如何","方法","建議","推薦","幫忙","求","需要","哪裡","什麼"] },
+  { mood:"憂慮抱怨", emoji:"😤", words:["煩","討厭","很爛","超爛","失望","無奈","無言","崩潰","好累","壓力","難過","焦慮","擔心"] },
+];
+
+function getTopicMessages(messages, topicWords) {
+  const result = []; const matched = new Set();
+  messages.forEach((msg, idx) => {
+    if (topicWords.some(w => msg.text.includes(w))) {
+      for (let i = Math.max(0, idx-2); i <= Math.min(messages.length-1, idx+2); i++) matched.add(i);
+    }
+  });
+  let group = []; let lastIdx = -2;
+  Array.from(matched).sort((a,b)=>a-b).forEach(idx => {
+    if (idx > lastIdx+1 && group.length) { result.push({ date: group[0].date||"", messages: group }); group = []; }
+    group.push(messages[idx]); lastIdx = idx;
+  });
+  if (group.length) result.push({ date: group[0].date||"", messages: group });
+  return result;
+}
+
+function analyzeLocally(dayData, dayKey) {
+  const { messages, senders } = dayData;
+  if (!messages.length) return null;
+  const allText = messages.map(m => m.text).join(" ");
+  const totalMessages = messages.length;
+  const participantCount = senders.size;
+  const topicScores = TOPIC_KEYWORDS.map(t => {
+    const count = t.words.reduce((acc,w) => acc+(allText.split(w).length-1), 0);
+    const matchedWords = t.words.filter(w => allText.includes(w)).slice(0,4);
+    const convGroups = getTopicMessages(messages, t.words);
+    return { ...t, count, keywords: matchedWords, convGroups };
+  }).filter(t => t.count > 0).sort((a,b) => b.count-a.count).slice(0,5);
+  const moodScores = MOOD_RULES.map(r => ({ ...r, count: r.words.reduce((acc,w)=>acc+(allText.split(w).length-1),0) })).sort((a,b)=>b.count-a.count);
+  const topMood = moodScores[0]?.count > 0 ? moodScores[0] : { mood:"一般交流", emoji:"💬" };
+  const stopWords = new Set(["的","了","是","我","你","他","她","它","們","在","有","也","都","和","就","不","很","這","那","說","要","會","可以","但是","因為","所以","如果","還是","已經","一個","什麼","這樣","這個","那個","還有","然後","其實","覺得","感覺","看到","知道","應該","可能","沒有","為什麼","怎麼"]);
+  const wordFreq = {};
+  for (const msg of messages) {
+    msg.text.replace(/[^\u4e00-\u9fff\w]/g," ").split(/\s+/).filter(w=>w.length>=2&&!stopWords.has(w)).forEach(w => { wordFreq[w]=(wordFreq[w]||0)+1; });
+  }
+  const topWords = Object.entries(wordFreq).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([w])=>w);
+  const senderCount = {};
+  for (const m of messages) senderCount[m.sender] = (senderCount[m.sender]||0)+1;
+  const topSenders = Object.entries(senderCount).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  const topicNames = topicScores.slice(0,2).map(t=>t.title).join("、")||"日常話題";
+  const summary = `${dayKey} 共有 ${participantCount} 人參與，交流了 ${totalMessages} 則訊息。`+(topicScores.length?`主要討論${topicNames}等話題。`:"")+`整體氛圍${topMood.mood}。`;
+  const highlights = [];
+  if (topSenders.length) highlights.push(`最活躍成員：${topSenders.map(([s,c])=>s+"（"+c+"則）").join("、")}`);
+  if (topWords.length) highlights.push(`熱門關鍵字：${topWords.slice(0,5).join("、")}`);
+  if (topicScores.length) highlights.push(`討論最多：${topicScores[0].title}（命中 ${topicScores[0].count} 次）`);
+  highlights.push(`平均每人發言 ${Math.round(totalMessages/Math.max(participantCount,1))} 則`);
+  return {
+    summary, highlights, mood: topMood.mood, moodEmoji: topMood.emoji,
+    participantCount, totalMessages, topWords, topSenders,
+    topics: topicScores.length ? topicScores.map(t=>({
+      title:t.title, emoji:t.emoji,
+      description:`命中關鍵字 ${t.count} 次，共 ${t.convGroups.length} 段相關對話`,
+      messageCount:t.convGroups.reduce((a,g)=>a+g.messages.length,0),
+      keywords:t.keywords.length?t.keywords:[t.words[0]], convGroups:t.convGroups,
+    })) : [{ title:"日常交流", emoji:"💬", description:"多元話題討論", messageCount:totalMessages, keywords:topWords.slice(0,3), convGroups:[] }],
+  };
+}
+
+function ConvDrawer({ topic, color, onClose }) {
+  const groups = topic.convGroups || [];
+  const byDate = {};
+  groups.forEach(g => { const d = g.date||"未知日期"; if (!byDate[d]) byDate[d]=[]; byDate[d].push(g); });
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:100, display:"flex", flexDirection:"column" }}>
+      <div style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.7)" }} onClick={onClose} />
+      <div style={{ position:"relative", marginTop:"auto", background:"#161b22", borderRadius:"16px 16px 0 0", maxHeight:"82vh", display:"flex", flexDirection:"column" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"16px 20px 12px", borderBottom:"1px solid #21262d", flexShrink:0 }}>
+          <span style={{ fontSize:22 }}>{topic.emoji}</span>
+          <div style={{ flex:1 }}>
+            <div style={{ fontWeight:700, fontSize:16 }}>{topic.title}</div>
+            <div style={{ fontSize:12, color:"#8b949e" }}>{groups.length} 段對話・{topic.messageCount} 則</div>
+          </div>
+          <button onClick={onClose} style={{ background:"#21262d", border:"none", color:"#e6edf3", borderRadius:"50%", width:32, height:32, fontSize:18, cursor:"pointer" }}>×</button>
+        </div>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, padding:"10px 20px", borderBottom:"1px solid #21262d", flexShrink:0 }}>
+          {(topic.keywords||[]).map((kw,i) => <span key={i} style={{ background:color+"22", color, borderRadius:12, padding:"3px 10px", fontSize:12 }}>#{kw}</span>)}
+        </div>
+        <div style={{ overflowY:"auto", padding:"12px 16px 40px", flex:1 }}>
+          {groups.length === 0 ? (
+            <div style={{ textAlign:"center", padding:"32px", color:"#8b949e" }}>沒有找到相關對話</div>
+          ) : Object.entries(byDate).sort(([a],[b])=>a.localeCompare(b)).map(([date, dateGroups]) => (
+            <div key={date} style={{ marginBottom:20 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, position:"sticky", top:0, background:"#161b22", paddingTop:4, paddingBottom:4, zIndex:1 }}>
+                <div style={{ flex:1, height:1, background:"#21262d" }} />
+                <div style={{ background:color+"22", color, borderRadius:20, padding:"3px 12px", fontSize:12, fontWeight:600 }}>📅 {date}</div>
+                <div style={{ flex:1, height:1, background:"#21262d" }} />
+              </div>
+              {dateGroups.map((group, gi) => (
+                <div key={gi} style={{ marginBottom:14 }}>
+                  {gi > 0 && <div style={{ textAlign:"center", color:"#30363d", fontSize:11, margin:"6px 0 10px" }}>· · ·</div>}
+                  {group.messages.map((msg, mi) => (
+                    <div key={mi} style={{ marginBottom:8, display:"flex", gap:8, alignItems:"flex-start" }}>
+                      <div style={{ flexShrink:0, background:color+"33", color, borderRadius:"50%", width:28, height:28, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700 }}>{msg.sender.slice(0,1)}</div>
+                      <div style={{ flex:1, background:"#0d1117", borderRadius:"4px 12px 12px 12px", padding:"8px 12px" }}>
+                        <div style={{ fontSize:11, color, fontWeight:600, marginBottom:3 }}>{msg.sender}</div>
+                        <div style={{ fontSize:13, color:"#c9d1d9", lineHeight:1.6 }}>{msg.text}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [tab, setTab] = useState("input");
+  const [chatText, setChatText] = useState("");
+  const [communityName, setCommunityName] = useState("");
+  const [records, setRecords] = useState(loadRecords);
+  const [selectedRecord, setSelectedRecord] = useState(null);
+  const [error, setError] = useState("");
+  const [searchQ, setSearchQ] = useState("");
+  const [parsedDays, setParsedDays] = useState(null);
+  const [selectedDays, setSelectedDays] = useState(new Set());
+  const [charCount, setCharCount] = useState(0);
+  const [openTopic, setOpenTopic] = useState(null);
+
+  useEffect(() => { saveRecords(records); }, [records]);
+
+  function handleTextChange(val) {
+    setChatText(val); setCharCount(val.length);
+    if (val.length > 50) {
+      const days = parseLineExport(val);
+      if (days.size > 0) { setParsedDays(days); setSelectedDays(new Set([Array.from(days.keys()).pop()])); }
+      else { setParsedDays(null); setSelectedDays(new Set()); }
+    } else { setParsedDays(null); setSelectedDays(new Set()); }
+  }
+
+  function handleAnalyze() {
+    if (!parsedDays || selectedDays.size === 0) { setError("請先貼入 Line 對話，並選擇日期"); return; }
+    const sortedDays = Array.from(selectedDays).sort();
+    const merged = { messages: [], senders: new Set() };
+    for (const day of sortedDays) { if (!parsedDays.has(day)) continue; const d = parsedDays.get(day); merged.messages.push(...d.messages); d.senders.forEach(s => merged.senders.add(s)); }
+    if (!merged.messages.length) { setError("選取的日期沒有偵測到有效訊息"); return; }
+    setError("");
+    const dateLabel = sortedDays.length===1 ? sortedDays[0] : sortedDays[0]+" ~ "+sortedDays[sortedDays.length-1]+"（共"+sortedDays.length+"天）";
+    const analysis = analyzeLocally(merged, dateLabel);
+    const record = { id: Date.now().toString(), community: communityName||"我的 Line 社群", date: dateLabel.replace(/\//g,"-"), createdAt: new Date().toISOString(), msgCount: merged.messages.length, analysis };
+    setRecords(prev => [record, ...prev]);
+    setSelectedRecord(record);
+    setTab("detail");
+  }
+
+  const filteredRecords = records.filter(r => r.community.includes(searchQ)||r.date.includes(searchQ));
+  function deleteRecord(id) { setRecords(prev=>prev.filter(r=>r.id!==id)); if (selectedRecord?.id===id) { setSelectedRecord(null); setTab("history"); } }
+  const totalSelectedMsgs = parsedDays ? Array.from(selectedDays).reduce((acc,d)=>acc+(parsedDays.get(d)?.messages.length||0),0) : 0;
+
+  const S = {
+    page: { minHeight:"100vh", background:"#0d1117", color:"#e6edf3", fontFamily:"'PingFang TC','Noto Sans TC',sans-serif" },
+    header: { background:"linear-gradient(135deg,#00b900,#06c755)", padding:"20px 20px 0", overflow:"hidden", position:"relative" },
+    tabBtn: (a) => ({ padding:"7px 16px", borderRadius:"20px 20px 0 0", border:"none", cursor:"pointer", fontSize:13, fontWeight:a?700:400, background:a?"#0d1117":"rgba(255,255,255,0.2)", color:a?"#00b900":"#fff", marginTop:12, display:"inline-block" }),
+    body: { padding:"20px 20px 40px", maxWidth:800, margin:"0 auto" },
+    input: { width:"100%", padding:"10px 12px", background:"#161b22", border:"1px solid #30363d", borderRadius:8, color:"#e6edf3", fontSize:14, boxSizing:"border-box" },
+    card: (ex) => ({ background:"#161b22", border:"1px solid #21262d", borderRadius:10, padding:"14px 16px", marginBottom:12, ...(ex||{}) }),
+    btn: (d) => ({ width:"100%", padding:14, background:d?"#21262d":"linear-gradient(135deg,#00b900,#06c755)", border:"none", borderRadius:10, color:d?"#8b949e":"#fff", fontSize:15, fontWeight:700, cursor:d?"not-allowed":"pointer" }),
+    label: { fontSize:12, color:"#8b949e", display:"block", marginBottom:5 },
+    tag: (c) => ({ background:c+"22", color:c, borderRadius:12, padding:"2px 10px", fontSize:11 }),
+    chip: { background:"#21262d", borderRadius:20, padding:"2px 10px", fontSize:11, color:"#8b949e" },
+  };
+
+  return (
+    <div style={S.page}>
+      {openTopic && <ConvDrawer topic={openTopic.topic} color={openTopic.color} onClose={() => setOpenTopic(null)} />}
+      <div style={S.header}>
+        <div style={{ position:"absolute", top:-30, right:-30, width:150, height:150, borderRadius:"50%", background:"rgba(255,255,255,0.08)" }} />
+        <div style={{ display:"flex", alignItems:"center", gap:12, position:"relative" }}>
+          <span style={{ fontSize:30 }}>💬</span>
+          <div>
+            <h1 style={{ margin:0, fontSize:19, fontWeight:700, color:"#fff" }}>Line 社群彙整</h1>
+            <p style={{ margin:"2px 0 0", fontSize:12, color:"rgba(255,255,255,0.85)" }}>本機分析・不需網路・點主題看原文</p>
+          </div>
+          <div style={{ marginLeft:"auto", background:"rgba(255,255,255,0.2)", borderRadius:20, padding:"4px 12px", fontSize:12, color:"#fff" }}>共 {records.length} 筆</div>
+        </div>
+        <div style={{ display:"flex", gap:6, marginTop:4 }}>
+          {[["input","📥 新增"],["history","📚 記錄"],...(selectedRecord?[["detail","📊 詳情"]]:[])].map(([k,l]) => (
+            <button key={k} onClick={() => setTab(k)} style={S.tabBtn(tab===k)}>{l}</button>
+          ))}
+        </div>
+      </div>
+      <div style={S.body}>
+
+        {tab === "input" && (
+          <div>
+            <div style={{ marginBottom:14 }}>
+              <label style={S.label}>社群名稱（選填）</label>
+              <input value={communityName} onChange={e => setCommunityName(e.target.value)} placeholder="例：設計師交流社群" style={S.input} />
+            </div>
+            <div style={{ marginBottom:14 }}>
+              <label style={S.label}>貼入 Line 匯出的聊天記錄 {charCount > 0 && <span style={{ marginLeft:8, color:"#8b949e" }}>{charCount.toLocaleString()} 字</span>}</label>
+              <textarea value={chatText} onChange={e => handleTextChange(e.target.value)} placeholder={"貼入從 Line 匯出的聊天記錄…\n系統自動偵測日期讓你選擇分析哪一天。"} rows={8} style={{ ...S.input, resize:"vertical", lineHeight:1.6 }} />
+            </div>
+            {parsedDays && parsedDays.size > 0 && (
+              <div style={{ background:"#0d2818", border:"1px solid #1f4a2e", borderRadius:10, padding:"14px 16px", marginBottom:14 }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                  <div style={{ fontSize:13, color:"#4ade80", fontWeight:600 }}>✅ 偵測到 {parsedDays.size} 天，可多選：</div>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button onClick={() => setSelectedDays(new Set(parsedDays.keys()))} style={{ padding:"4px 10px", borderRadius:12, border:"1px solid #4ade80", background:"transparent", color:"#4ade80", fontSize:11, cursor:"pointer" }}>全選</button>
+                    <button onClick={() => setSelectedDays(new Set())} style={{ padding:"4px 10px", borderRadius:12, border:"1px solid #6e7681", background:"transparent", color:"#6e7681", fontSize:11, cursor:"pointer" }}>清除</button>
+                  </div>
+                </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:10 }}>
+                  {Array.from(parsedDays.entries()).map(([day, data]) => {
+                    const isSel = selectedDays.has(day);
+                    return (
+                      <button key={day} onClick={() => { const n=new Set(selectedDays); if(isSel)n.delete(day);else n.add(day); setSelectedDays(n); }}
+                        style={{ padding:"7px 14px", borderRadius:20, cursor:"pointer", fontSize:12, color:"#e6edf3", position:"relative", border:isSel?"2px solid #00b900":"1px solid #30363d", background:isSel?"#00b900":"#161b22" }}>
+                        {day} <span style={{ fontSize:11, opacity:0.75 }}>({data.messages.length}則)</span>
+                        {isSel && <span style={{ position:"absolute", top:-6, right:-6, background:"#fff", color:"#00b900", borderRadius:"50%", width:14, height:14, fontSize:10, display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700 }}>✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                {selectedDays.size > 0 && (
+                  <div style={{ fontSize:12, color:"#8b949e", borderTop:"1px solid #1f4a2e", paddingTop:8 }}>
+                    已選 <strong style={{ color:"#4ade80" }}>{selectedDays.size}</strong> 天・共 <strong style={{ color:"#4ade80" }}>{totalSelectedMsgs}</strong> 則
+                    {selectedDays.size > 1 && <span style={{ marginLeft:6, color:"#fbbf24" }}>（將合併分析）</span>}
+                  </div>
+                )}
+              </div>
+            )}
+            {!parsedDays && chatText.length > 50 && (
+              <div style={{ background:"#1c1208", border:"1px solid #5a3e1b", borderRadius:10, padding:"12px 16px", marginBottom:14 }}>
+                <div style={{ fontSize:13, color:"#fbbf24", marginBottom:4 }}>⚠️ 偵測不到日期格式</div>
+                <div style={{ fontSize:12, color:"#8b949e" }}>請確認是否完整複製，Line 匯出記錄第一行通常是日期如「2026/06/03」。</div>
+              </div>
+            )}
+            {error && <div style={{ background:"#2d1717", border:"1px solid #f85149", borderRadius:8, padding:"10px 14px", marginBottom:14, color:"#f85149", fontSize:13 }}>⚠️ {error}</div>}
+            <button onClick={handleAnalyze} disabled={selectedDays.size===0} style={S.btn(selectedDays.size===0)}>
+              {selectedDays.size===0?"⚡ 請先選擇日期":selectedDays.size===1?"⚡ 分析 "+Array.from(selectedDays)[0]:"⚡ 合併分析 "+selectedDays.size+" 天"}
+            </button>
+            <div style={{ ...S.card(), marginTop:16, fontSize:12, color:"#8b949e" }}>
+              <strong style={{ color:"#58a6ff" }}>📌 Line 匯出方法</strong>
+              <div style={{ marginTop:6, lineHeight:2.2 }}>1. 開啟社群聊天室<br/>2. 右上角 ⋮ → 其他 → 傳送聊天記錄<br/>3. 選擇期間 → 以文字傳送<br/>4. 複製全部文字，貼入上方</div>
+            </div>
+          </div>
+        )}
+
+        {tab === "history" && (
+          <div>
+            <div style={{ marginBottom:14 }}><input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="🔍 搜尋社群或日期…" style={S.input} /></div>
+            {filteredRecords.length === 0 ? (
+              <div style={{ textAlign:"center", padding:"48px 20px", color:"#8b949e" }}><div style={{ fontSize:48, marginBottom:12 }}>📭</div><div>還沒有記錄</div></div>
+            ) : filteredRecords.map((r,i) => (
+              <div key={r.id} onClick={() => { setSelectedRecord(r); setTab("detail"); }} style={{ ...S.card(), cursor:"pointer" }}
+                onMouseEnter={e=>e.currentTarget.style.borderColor="#00b900"} onMouseLeave={e=>e.currentTarget.style.borderColor="#21262d"}>
+                <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+                      <span style={{ background:COLORS[i%COLORS.length], width:8, height:8, borderRadius:"50%", display:"inline-block", flexShrink:0 }} />
+                      <span style={{ fontWeight:600, fontSize:15 }}>{r.community}</span>
+                      <span style={{ fontSize:12, color:"#8b949e", marginLeft:"auto" }}>{r.date}</span>
+                    </div>
+                    <p style={{ margin:"0 0 8px", fontSize:13, color:"#8b949e", lineHeight:1.5 }}>{(r.analysis?.summary||"").slice(0,70)}…</p>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                      {(r.analysis?.topics||[]).slice(0,3).map((t,j) => <span key={j} style={S.chip}>{t.emoji} {t.title}</span>)}
+                    </div>
+                  </div>
+                  <button onClick={e=>{e.stopPropagation();deleteRecord(r.id);}} style={{ background:"none", border:"none", color:"#6e7681", cursor:"pointer", fontSize:16, paddingLeft:8, flexShrink:0 }}>🗑️</button>
+                </div>
+                <div style={{ fontSize:11, color:"#30363d", marginTop:8 }}>{r.msgCount} 則・{fmtDate(r.createdAt)} {fmtTime(r.createdAt)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "detail" && selectedRecord && (
+          <div>
+            <div style={{ background:"linear-gradient(135deg,#0d2818,#0d2218)", border:"1px solid #1f4a2e", borderRadius:12, padding:"18px 20px", marginBottom:16 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                <div><h2 style={{ margin:"0 0 4px", fontSize:18, fontWeight:700 }}>{selectedRecord.community}</h2><div style={{ fontSize:13, color:"#8b949e" }}>📅 {selectedRecord.date}</div></div>
+                <div style={{ textAlign:"right" }}><div style={{ fontSize:26 }}>{selectedRecord.analysis?.moodEmoji}</div><div style={{ fontSize:12, color:"#8b949e" }}>{selectedRecord.analysis?.mood}</div></div>
+              </div>
+              <p style={{ margin:"12px 0 0", fontSize:14, color:"#c9d1d9", lineHeight:1.7 }}>{selectedRecord.analysis?.summary}</p>
+              <div style={{ display:"flex", gap:20, marginTop:12 }}>
+                <div style={{ fontSize:12, color:"#8b949e" }}>💬 <strong style={{ color:"#e6edf3" }}>{selectedRecord.analysis?.totalMessages}</strong> 則</div>
+                <div style={{ fontSize:12, color:"#8b949e" }}>👥 <strong style={{ color:"#e6edf3" }}>{selectedRecord.analysis?.participantCount}</strong> 人</div>
+              </div>
+            </div>
+            {selectedRecord.analysis?.topWords?.length > 0 && (
+              <div style={{ ...S.card(), marginBottom:16 }}>
+                <div style={{ fontSize:13, fontWeight:600, color:"#8b949e", marginBottom:10 }}>🔑 熱門關鍵字</div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+                  {selectedRecord.analysis.topWords.map((w,i) => <span key={i} style={{ ...S.tag(COLORS[i%COLORS.length]), fontSize:13, padding:"4px 12px" }}>{w}</span>)}
+                </div>
+              </div>
+            )}
+            <div style={{ fontSize:13, fontWeight:600, color:"#8b949e", marginBottom:6 }}>📌 討論主題</div>
+            <div style={{ fontSize:11, color:"#4ade80", marginBottom:10 }}>👆 點主題卡片可查看該分類下的完整對話</div>
+            <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:16 }}>
+              {(selectedRecord.analysis?.topics||[]).map((t,i) => (
+                <div key={i} onClick={() => setOpenTopic({ topic:t, color:COLORS[i%COLORS.length] })}
+                  style={{ ...S.card({ border:"1px solid "+COLORS[i%COLORS.length]+"44", cursor:"pointer" }) }}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=COLORS[i%COLORS.length];e.currentTarget.style.background="#1c2333";}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor=COLORS[i%COLORS.length]+"44";e.currentTarget.style.background="#161b22";}}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+                    <span style={{ fontSize:22 }}>{t.emoji}</span>
+                    <span style={{ fontWeight:600, fontSize:15 }}>{t.title}</span>
+                    <span style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
+                      <span style={S.chip}>{t.convGroups?.length||0} 段對話</span>
+                      <span style={{ color:COLORS[i%COLORS.length], fontSize:16 }}>›</span>
+                    </span>
+                  </div>
+                  <p style={{ margin:"0 0 8px", fontSize:13, color:"#8b949e" }}>{t.description}</p>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                    {(t.keywords||[]).map((kw,j) => <span key={j} style={S.tag(COLORS[i%COLORS.length])}>#{kw}</span>)}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize:13, fontWeight:600, color:"#8b949e", marginBottom:10 }}>✨ 重點摘要</div>
+            <div style={{ ...S.card(), marginBottom:16 }}>
+              {(selectedRecord.analysis?.highlights||[]).map((h,i,arr) => (
+                <div key={i} style={{ display:"flex", gap:10, padding:"8px 0", borderBottom:i<arr.length-1?"1px solid #21262d":"none" }}>
+                  <span style={{ color:"#00b900", fontWeight:700, flexShrink:0 }}>✓</span>
+                  <span style={{ fontSize:14, color:"#c9d1d9", lineHeight:1.6 }}>{h}</span>
+                </div>
+              ))}
+            </div>
+            {selectedRecord.analysis?.topSenders?.length > 0 && (
+              <div>
+                <div style={{ fontSize:13, fontWeight:600, color:"#8b949e", marginBottom:10 }}>🏆 最活躍成員</div>
+                <div style={S.card()}>
+                  {selectedRecord.analysis.topSenders.map(([name,count],i) => (
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:i<selectedRecord.analysis.topSenders.length-1?"1px solid #21262d":"none" }}>
+                      <span style={{ fontSize:18 }}>{"🥇🥈🥉"[i]}</span>
+                      <span style={{ flex:1, fontSize:14 }}>{name}</span>
+                      <span style={S.chip}>{count} 則</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
